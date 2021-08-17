@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -21,44 +22,107 @@ func initLog() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
 
-func parseArguements() (bool, int, string) {
-	noOfDays := flag.Int("validity", 1, "How long the cache is valid in days")
-	recache := flag.Bool("recache", false, "Re cache all the results")
-	debug := flag.Bool("debug", false, "sets log level to debug")
+func parseArguments() (int, bool, bool, bool, bool, string) {
+	var noOfDays int
+	var recache, debug, deleteAll, cachePath, list bool
+
+	helpMsg := map[string]string{
+		"validity":  "How long the cache is valid in days",
+		"recache":   "[TBD] re cache all the results",
+		"debug":     "sets log level to debug",
+		"deleteAll": "delete all the cached results",
+		"cachePath": "show where the cached results are stored",
+		"list":      "[TBD] list all cached commands",
+	}
+
+	flag.IntVar(&noOfDays, "V", 1, helpMsg["validity"])
+	//flag.BoolVar(&recache, "r", false, helpMsg["recache"])
+	flag.BoolVar(&debug, "d", false, helpMsg["debug"])
+	flag.BoolVar(&deleteAll, "D", false, helpMsg["deleteAll"])
+	flag.BoolVar(&cachePath, "C", false, helpMsg["cachePath"])
+	//flag.BoolVar(&list, "l", false, helpMsg["list"])
 
 	flag.Parse()
 	program := strings.Join(flag.Args(), " ")
 
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if *debug {
+	if debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 
-	return *recache, *noOfDays, program
+	return noOfDays, recache, deleteAll, cachePath, list, program
 }
 
 // TODO
 func recacheAllCommands() {
-	log.Debug().Msg("Will Recache all")
-	os.Exit(0)
+	fmt.Println("Not Implemented")
 }
 
+func listAllCommands() {
+
+	fmt.Println("Not Implemented")
+}
+
+func deleteAllCached() {
+	log.Debug().Msg("Will Delete all Cached results")
+	savePath := ensureCacheDirExists()
+
+	if err := os.RemoveAll(savePath); err != nil {
+		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to delete: \n\t%s\n", savePath))
+	}
+	fmt.Println("Deleted Cache folder")
+}
+
+// Ensures that the directory for caching exists
 func ensureCacheDirExists() string {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		log.Fatal().Msgf("Can't find Cache Dir: %s", err)
 	}
-	savePath := path.Join(cacheDir, "cache-output")
-	os.MkdirAll(savePath, 0755)
-	return savePath
+	cachePath := path.Join(cacheDir, "cache-output")
+	err = os.MkdirAll(cachePath, 0755)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create the cache directory")
+	}
+	return cachePath
 }
+
+//// Ensures that the directory for config exists
+//func ensureConfigDirExists() string {
+//	configDir, err := os.UserConfigDir()
+//	if err != nil {
+//		log.Fatal().Msgf("Can't find Config Dir: %s", err)
+//	}
+//	configPath := path.Join(configDir, "cache-output")
+//	err = os.MkdirAll(configPath, 0755)
+//	if err != nil {
+//		log.Fatal().Err(err).Msg("Failed to create the config directory")
+//	}
+//	return configPath
+//}
 
 func main() {
 	initLog()
-	recache, noOfDays, program := parseArguements()
+	noOfDays, recache, deleteAll, cachePath, list, program := parseArguments()
 
-	if recache {
+	switch {
+	case cachePath:
+		fmt.Printf("The Cached results are stored in \n\t%s\n", ensureCacheDirExists())
+		os.Exit(0)
+	case recache:
 		recacheAllCommands()
+		os.Exit(0)
+	case deleteAll:
+		deleteAllCached()
+		os.Exit(0)
+	case list:
+		listAllCommands()
+		os.Exit(0)
+	}
+
+	if len(strings.Trim(program, " \n\t")) == 0 {
+		fmt.Println("No command provided.\n\tUsage: cache-output <command to cache>")
+		os.Exit(0)
 	}
 
 	savePath := ensureCacheDirExists()
@@ -91,11 +155,15 @@ func main() {
 				log.Fatal().Err(err).Msg("")
 			}
 
-			file.Close()
+			if err := file.Close(); err != nil {
+				log.Warn().Err(err).Msg("Failed to close the cached file")
+			}
 			return
 		} else {
 			// Cache file is invalid
-			file.Close()
+			if err := file.Close(); err != nil {
+				log.Warn().Err(err).Msg("Failed to close the cached file")
+			}
 		}
 	}
 
@@ -118,35 +186,21 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msgf("Failed to connect to output pipe of program: %s", program)
 	}
-	log.Debug().Msg("Reached herez")
 
 	duplicateReader := io.TeeReader(stdout, os.Stdout) // Split the pipe to 2 directions: 1) stdout, 2) reader
-	log.Debug().Msg("Reached herez 2")
 
 	log.Debug().Msg("Running the program.")
 	if err := cmd.Start(); err != nil {
 		log.Fatal().Err(err).Msg("Program Failed to start")
 	}
 
-	io.Copy(fileWriter, duplicateReader)
+	if _, err := io.Copy(fileWriter, duplicateReader); err != nil {
+		log.Fatal().Err(err).Msg("Failed to copy over the cached data.")
+	}
 
 	if err := cmd.Wait(); err != nil {
-		log.Fatal().Err(err).Msg("Program exited with non zero exit code.")
+		log.Fatal().Err(err).Msg("Given Program exited with non zero exit code.")
 	}
 
 	log.Debug().Msgf("Will cache results to %s of [%s] for %d days.", hashString, program, noOfDays)
-
-	// reader := bufio.NewReader(os.Stdin)
-	// fmt.Print("Enter text: ")
-	// text, _ := reader.ReadString('\n')
-	// fmt.Println(text)
-
-	// fmt.Println("Enter text: ")
-	// text2 := ""
-	// fmt.Scanln(text2)
-	// fmt.Println(text2)
-
-	// ln := ""
-	// fmt.Sscanln("%v", ln)
-	// fmt.Println(ln)
 }

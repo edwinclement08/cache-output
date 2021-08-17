@@ -1,0 +1,2 @@
+* Cache Output
+  A cacher for long running cli commands, that usually return the same output
